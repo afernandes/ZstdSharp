@@ -8,6 +8,8 @@ namespace ZstdSharp
     {
         private readonly SafeDctxHandle handle;
 
+        private byte[] prefix;
+
         public Decompressor()
         {
             handle = SafeDctxHandle.Create();
@@ -38,6 +40,20 @@ namespace ZstdSharp
             using var dctx = handle.Acquire();
             fixed (byte* dictPtr = dict)
                 Methods.ZSTD_DCtx_loadDictionary(dctx, dictPtr, (nuint)dict.Length).EnsureZstdSuccess();
+        }
+
+        /// <summary>
+        /// Sets a prefix used as a reference for the next Unwrap/TryUnwrap calls (zstd "patch-from").
+        /// Must be the same prefix used by <see cref="Compressor.SetPrefix(byte[])"/> during compression.
+        /// The buffer is referenced (not copied) and must not be modified between calls.
+        /// Pass null to clear. Note: the prefix applies to Unwrap/TryUnwrap (single-shot) calls only.
+        /// Remember to raise <see cref="ZSTD_dParameter.ZSTD_d_windowLogMax"/> to the windowLog used
+        /// during compression when large windows are involved.
+        /// </summary>
+        /// <param name="prefix">Reference content used during compression, or null to clear.</param>
+        public void SetPrefix(byte[] prefix)
+        {
+            this.prefix = prefix;
         }
 
         public static ulong GetDecompressedSize(ReadOnlySpan<byte> src)
@@ -72,10 +88,14 @@ namespace ZstdSharp
 
         public int Unwrap(ReadOnlySpan<byte> src, Span<byte> dest)
         {
+            var currentPrefix = prefix;
+            fixed (byte* prefixPtr = currentPrefix)
             fixed (byte* srcPtr = src)
             fixed (byte* destPtr = dest)
             {
                 using var dctx = handle.Acquire();
+                if (currentPrefix != null)
+                    Methods.ZSTD_DCtx_refPrefix(dctx, prefixPtr, (nuint)currentPrefix.Length).EnsureZstdSuccess();
                 return (int)Methods
                     .ZSTD_decompressDCtx(dctx, destPtr, (nuint)dest.Length, srcPtr, (nuint)src.Length)
                     .EnsureZstdSuccess();
@@ -90,12 +110,16 @@ namespace ZstdSharp
 
         public bool TryUnwrap(ReadOnlySpan<byte> src, Span<byte> dest, out int written)
         {
+            var currentPrefix = prefix;
+            fixed (byte* prefixPtr = currentPrefix)
             fixed (byte* srcPtr = src)
             fixed (byte* destPtr = dest)
             {
                 nuint returnValue;
                 using (var dctx = handle.Acquire())
                 {
+                    if (currentPrefix != null)
+                        Methods.ZSTD_DCtx_refPrefix(dctx, prefixPtr, (nuint)currentPrefix.Length).EnsureZstdSuccess();
                     returnValue =
                         Methods.ZSTD_decompressDCtx(dctx, destPtr, (nuint)dest.Length, srcPtr, (nuint)src.Length);
                 }
