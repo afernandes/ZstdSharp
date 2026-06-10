@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Buffers;
+using System.Runtime.InteropServices;
 using ZstdSharp.Unsafe;
 
 namespace ZstdSharp
@@ -8,9 +9,7 @@ namespace ZstdSharp
     {
         private readonly SafeDctxHandle handle;
 
-#nullable enable
-        private byte[]? prefix;
-#nullable restore
+        private GCHandle prefixHandle;
 
         public Decompressor()
         {
@@ -45,31 +44,47 @@ namespace ZstdSharp
         }
 
         /// <summary>
-        /// Sets a prefix used as a reference for the next Unwrap/TryUnwrap calls (zstd "patch-from").
-        /// Must be the same prefix used by <see cref="Compressor.SetPrefix(byte[])"/> during compression.
-        /// The buffer is referenced (not copied) and must not be modified between calls.
-        /// Pass null to clear. Note: the prefix applies to Unwrap/TryUnwrap (single-shot) calls only.
-        /// Remember to raise <see cref="ZSTD_dParameter.ZSTD_d_windowLogMax"/> to the windowLog used
-        /// during compression when large windows are involved.
+        /// References a prefix for the next decompressed frame (ZSTD_DCtx_refPrefix). Must be
+        /// the same prefix referenced by <see cref="Compressor.RefPrefix(byte[])"/> during
+        /// compression. Native semantics: the prefix applies to the next frame only and is
+        /// referenced, not copied — this instance pins the array and it must not be modified
+        /// until that decompression completes. Re-reference before each frame; pass null to
+        /// clear. Remember to raise <see cref="ZSTD_dParameter.ZSTD_d_windowLogMax"/> to the
+        /// windowLog used during compression when large windows are involved.
         /// </summary>
         /// <param name="prefix">Reference content used during compression, or null to clear.</param>
 #nullable enable
-        public void SetPrefix(byte[]? prefix)
+        public void RefPrefix(byte[]? prefix)
         {
-            this.prefix = prefix;
-        }
+            using var dctx = handle.Acquire();
+            FreePinnedPrefix();
+            if (prefix == null || prefix.Length == 0)
+            {
+                Methods.ZSTD_DCtx_refPrefix(dctx, null, 0).EnsureZstdSuccess();
+                return;
+            }
 
-        /* A prefix overlapping the destination would be modified while zstd is still reading
-         * it, and one overlapping the source confuses the window tracking; work on a copy in
-         * either case. */
-        private byte[]? GetEffectivePrefix(ReadOnlySpan<byte> src, ReadOnlySpan<byte> dest)
-        {
-            var currentPrefix = prefix;
-            if (currentPrefix != null && (src.Overlaps(currentPrefix) || dest.Overlaps(currentPrefix)))
-                currentPrefix = (byte[])currentPrefix.Clone();
-            return currentPrefix;
+            prefixHandle = GCHandle.Alloc(prefix, GCHandleType.Pinned);
+            try
+            {
+                Methods.ZSTD_DCtx_refPrefix(dctx, (byte*)prefixHandle.AddrOfPinnedObject(), (nuint)prefix.Length)
+                    .EnsureZstdSuccess();
+            }
+            catch
+            {
+                FreePinnedPrefix();
+                throw;
+            }
         }
 #nullable restore
+
+        private void FreePinnedPrefix()
+        {
+            if (prefixHandle.IsAllocated)
+            {
+                prefixHandle.Free();
+            }
+        }
 
         public static ulong GetDecompressedSize(ReadOnlySpan<byte> src)
         {
@@ -103,14 +118,10 @@ namespace ZstdSharp
 
         public int Unwrap(ReadOnlySpan<byte> src, Span<byte> dest)
         {
-            var currentPrefix = GetEffectivePrefix(src, dest);
-            fixed (byte* prefixPtr = currentPrefix)
             fixed (byte* srcPtr = src)
             fixed (byte* destPtr = dest)
             {
                 using var dctx = handle.Acquire();
-                if (currentPrefix != null)
-                    Methods.ZSTD_DCtx_refPrefix(dctx, prefixPtr, (nuint)currentPrefix.Length).EnsureZstdSuccess();
                 return (int)Methods
                     .ZSTD_decompressDCtx(dctx, destPtr, (nuint)dest.Length, srcPtr, (nuint)src.Length)
                     .EnsureZstdSuccess();
@@ -125,16 +136,12 @@ namespace ZstdSharp
 
         public bool TryUnwrap(ReadOnlySpan<byte> src, Span<byte> dest, out int written)
         {
-            var currentPrefix = GetEffectivePrefix(src, dest);
-            fixed (byte* prefixPtr = currentPrefix)
             fixed (byte* srcPtr = src)
             fixed (byte* destPtr = dest)
             {
                 nuint returnValue;
                 using (var dctx = handle.Acquire())
                 {
-                    if (currentPrefix != null)
-                        Methods.ZSTD_DCtx_refPrefix(dctx, prefixPtr, (nuint)currentPrefix.Length).EnsureZstdSuccess();
                     returnValue =
                         Methods.ZSTD_decompressDCtx(dctx, destPtr, (nuint)dest.Length, srcPtr, (nuint)src.Length);
                 }
@@ -157,6 +164,7 @@ namespace ZstdSharp
         public void Dispose()
         {
             handle.Dispose();
+            FreePinnedPrefix();
             GC.SuppressFinalize(this);
         }
 

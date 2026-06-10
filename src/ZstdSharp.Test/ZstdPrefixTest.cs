@@ -5,8 +5,8 @@ using Xunit;
 namespace ZstdSharp.Test
 {
     /// <summary>
-    /// Tests for Compressor.SetPrefix / Decompressor.SetPrefix (zstd "patch-from"):
-    /// delta compression against a reference content, effective at any reference size.
+    /// Tests for Compressor.RefPrefix / Decompressor.RefPrefix (ZSTD_CCtx_refPrefix /
+    /// ZSTD_DCtx_refPrefix): delta compression against a reference content ("patch-from").
     /// </summary>
     public class ZstdPrefixTest
     {
@@ -26,7 +26,7 @@ namespace ZstdSharp.Test
         }
 
         [Fact]
-        public void PrefixRoundtrip_ModifiedData()
+        public void RefPrefixRoundtrip_ModifiedData()
         {
             var baseData = CreateRandom(1024 * 1024);
             var targetData = (byte[])baseData.Clone();
@@ -39,7 +39,7 @@ namespace ZstdSharp.Test
             compressor.SetParameter(ZSTD_cParameter.ZSTD_c_enableLongDistanceMatching, 1);
             compressor.SetParameter(ZSTD_cParameter.ZSTD_c_windowLog, windowLog);
             compressor.SetParameter(ZSTD_cParameter.ZSTD_c_checksumFlag, 1);
-            compressor.SetPrefix(baseData);
+            compressor.RefPrefix(baseData);
             var delta = compressor.Wrap(targetData).ToArray();
 
             // 64 changed bytes in 1 MB: the delta must be tiny, not a recompression.
@@ -47,13 +47,13 @@ namespace ZstdSharp.Test
 
             using var decompressor = new Decompressor();
             decompressor.SetParameter(ZSTD_dParameter.ZSTD_d_windowLogMax, windowLog);
-            decompressor.SetPrefix(baseData);
+            decompressor.RefPrefix(baseData);
             var restored = decompressor.Unwrap(delta).ToArray();
             Assert.Equal(targetData, restored);
         }
 
         [Fact]
-        public void PrefixRoundtrip_WrongPrefixFails()
+        public void RefPrefixRoundtrip_WrongPrefixFails()
         {
             // The target must actually reference the prefix, otherwise decompression
             // succeeds regardless of the prefix supplied.
@@ -66,24 +66,23 @@ namespace ZstdSharp.Test
             compressor.SetParameter(ZSTD_cParameter.ZSTD_c_enableLongDistanceMatching, 1);
             compressor.SetParameter(ZSTD_cParameter.ZSTD_c_windowLog, WindowLog(2L * baseData.Length));
             compressor.SetParameter(ZSTD_cParameter.ZSTD_c_checksumFlag, 1);
-            compressor.SetPrefix(baseData);
+            compressor.RefPrefix(baseData);
             var delta = compressor.Wrap(targetData).ToArray();
             Assert.True(delta.Length < 4096, "the delta should reference the prefix");
 
             var wrongPrefix = CreateRandom(1024 * 1024, seed: 44);
             using var decompressor = new Decompressor();
-            decompressor.SetPrefix(wrongPrefix);
+            decompressor.RefPrefix(wrongPrefix);
             Assert.Throws<ZstdException>(() => decompressor.Unwrap(delta));
         }
 
         [Fact]
-        public void Prefix_LargeReference_StaysEffective()
+        public void RefPrefix_LargeReference_StaysEffective()
         {
-            // Regression for delta ("patch-from") against large references: LoadDictionary
-            // builds a CDict whose effectiveness degrades beyond ~32-64 MB of content
-            // (inherited zstd behavior), while a prefix is indexed with the context
-            // parameters and has no such limit. 80 MB crosses that threshold while keeping
-            // the test CI-friendly (~240 MB peak).
+            // Delta ("patch-from") against large references: LoadDictionary builds a CDict
+            // whose effectiveness degrades beyond ~32-64 MB of content (inherited zstd
+            // behavior), while a prefix is indexed with the context parameters and has no
+            // such limit.
             const int size = 80 * 1024 * 1024;
             var baseData = CreateRandom(size);
             var targetData = (byte[])baseData.Clone();
@@ -93,7 +92,7 @@ namespace ZstdSharp.Test
             using var compressor = new Compressor(3);
             compressor.SetParameter(ZSTD_cParameter.ZSTD_c_enableLongDistanceMatching, 1);
             compressor.SetParameter(ZSTD_cParameter.ZSTD_c_windowLog, windowLog);
-            compressor.SetPrefix(baseData);
+            compressor.RefPrefix(baseData);
             var delta = compressor.Wrap(targetData).ToArray();
 
             // Identical content: with an effective reference the delta is <1% of the input.
@@ -101,45 +100,33 @@ namespace ZstdSharp.Test
 
             using var decompressor = new Decompressor();
             decompressor.SetParameter(ZSTD_dParameter.ZSTD_d_windowLogMax, windowLog);
-            decompressor.SetPrefix(baseData);
+            decompressor.RefPrefix(baseData);
             var restored = decompressor.Unwrap(delta).ToArray();
             Assert.Equal(targetData, restored);
         }
 
         [Fact]
-        public void Prefix_OverlappingSource_IsDefended()
+        public void RefPrefix_AppliesToNextFrameOnly()
         {
-            // zstd silently ignores a by-reference prefix overlapping the source buffer;
-            // the wrapper must defend by working on a copy.
-            var data = CreateRandom(1024 * 1024);
-
-            using var compressor = new Compressor(3);
-            compressor.SetParameter(ZSTD_cParameter.ZSTD_c_enableLongDistanceMatching, 1);
-            compressor.SetParameter(ZSTD_cParameter.ZSTD_c_windowLog, WindowLog(2L * data.Length));
-            compressor.SetPrefix(data);
-            var delta = compressor.Wrap(data).ToArray();
-
-            Assert.True(delta.Length < data.Length / 100, $"prefix was not effective: {delta.Length} bytes");
-        }
-
-        [Fact]
-        public void Prefix_IsReappliedAcrossWraps_AndClearable()
-        {
+            // Native semantics: the prefix is consumed by the next frame; later frames
+            // compress without it unless it is referenced again.
             var baseData = CreateRandom(1024 * 1024);
             var targetData = (byte[])baseData.Clone();
 
             using var compressor = new Compressor(3);
-            compressor.SetPrefix(baseData);
+            compressor.SetParameter(ZSTD_cParameter.ZSTD_c_enableLongDistanceMatching, 1);
+            compressor.SetParameter(ZSTD_cParameter.ZSTD_c_windowLog, WindowLog(2L * baseData.Length));
+
+            compressor.RefPrefix(baseData);
             var first = compressor.Wrap(targetData).ToArray();
+            Assert.True(first.Length < baseData.Length / 100, "first frame should use the prefix");
+
             var second = compressor.Wrap(targetData).ToArray();
+            Assert.True(second.Length > baseData.Length / 2, "second frame should not use the prefix");
 
-            // The prefix must apply to every Wrap, not only the first frame.
-            Assert.True(first.Length < baseData.Length / 100);
-            Assert.True(second.Length < baseData.Length / 100);
-
-            compressor.SetPrefix(null);
-            var withoutPrefix = compressor.Wrap(targetData).ToArray();
-            Assert.True(withoutPrefix.Length > baseData.Length / 2, "clearing the prefix had no effect");
+            compressor.RefPrefix(baseData);
+            var third = compressor.Wrap(targetData).ToArray();
+            Assert.True(third.Length < baseData.Length / 100, "re-referenced prefix should apply again");
         }
     }
 }
