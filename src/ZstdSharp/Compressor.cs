@@ -26,7 +26,9 @@ namespace ZstdSharp
 
         private readonly SafeCctxHandle handle;
 
-        private byte[] prefix;
+#nullable enable
+        private byte[]? prefix;
+#nullable restore
 
         public int Level
         {
@@ -79,10 +81,12 @@ namespace ZstdSharp
         /// Pass null to clear. Note: the prefix applies to Wrap/TryWrap (single-shot) calls only.
         /// </summary>
         /// <param name="prefix">Reference content (for delta compression, the previous version of the data), or null to clear.</param>
-        public void SetPrefix(byte[] prefix)
+#nullable enable
+        public void SetPrefix(byte[]? prefix)
         {
             this.prefix = prefix;
         }
+#nullable restore
 
         public Compressor(int level = DefaultCompressionLevel)
         {
@@ -108,7 +112,7 @@ namespace ZstdSharp
 
         public int Wrap(ReadOnlySpan<byte> src, Span<byte> dest)
         {
-            var currentPrefix = GetEffectivePrefix(src);
+            var currentPrefix = GetEffectivePrefix(src, dest);
             fixed (byte* prefixPtr = currentPrefix)
             fixed (byte* srcPtr = src)
             fixed (byte* destPtr = dest)
@@ -122,14 +126,18 @@ namespace ZstdSharp
         }
 
         /* A prefix overlapping the source confuses the zstd window tracking and is silently
-         * ignored (e.g. compressing a buffer against itself); work on a copy in that case. */
-        private byte[] GetEffectivePrefix(ReadOnlySpan<byte> src)
+         * ignored (e.g. compressing a buffer against itself), and a prefix overlapping the
+         * destination would be modified while zstd is still reading it; work on a copy in
+         * either case. */
+#nullable enable
+        private byte[]? GetEffectivePrefix(ReadOnlySpan<byte> src, ReadOnlySpan<byte> dest)
         {
             var currentPrefix = prefix;
-            if (currentPrefix != null && src.Overlaps(currentPrefix))
+            if (currentPrefix != null && (src.Overlaps(currentPrefix) || dest.Overlaps(currentPrefix)))
                 currentPrefix = (byte[])currentPrefix.Clone();
             return currentPrefix;
         }
+#nullable restore
 
         public int Wrap(ArraySegment<byte> src, ArraySegment<byte> dest)
             => Wrap((ReadOnlySpan<byte>)src, dest);
@@ -142,7 +150,7 @@ namespace ZstdSharp
 
         public bool TryWrap(ReadOnlySpan<byte> src, Span<byte> dest, out int written)
         {
-            var currentPrefix = GetEffectivePrefix(src);
+            var currentPrefix = GetEffectivePrefix(src, dest);
             fixed (byte* prefixPtr = currentPrefix)
             fixed (byte* srcPtr = src)
             fixed (byte* destPtr = dest)

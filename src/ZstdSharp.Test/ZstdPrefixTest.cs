@@ -82,8 +82,9 @@ namespace ZstdSharp.Test
             // Regression for delta ("patch-from") against large references: LoadDictionary
             // builds a CDict whose effectiveness degrades beyond ~32-64 MB of content
             // (inherited zstd behavior), while a prefix is indexed with the context
-            // parameters and has no such limit.
-            const int size = 128 * 1024 * 1024;
+            // parameters and has no such limit. 80 MB crosses that threshold while keeping
+            // the test CI-friendly (~240 MB peak).
+            const int size = 80 * 1024 * 1024;
             var baseData = CreateRandom(size);
             var targetData = (byte[])baseData.Clone();
 

@@ -8,7 +8,9 @@ namespace ZstdSharp
     {
         private readonly SafeDctxHandle handle;
 
-        private byte[] prefix;
+#nullable enable
+        private byte[]? prefix;
+#nullable restore
 
         public Decompressor()
         {
@@ -51,10 +53,23 @@ namespace ZstdSharp
         /// during compression when large windows are involved.
         /// </summary>
         /// <param name="prefix">Reference content used during compression, or null to clear.</param>
-        public void SetPrefix(byte[] prefix)
+#nullable enable
+        public void SetPrefix(byte[]? prefix)
         {
             this.prefix = prefix;
         }
+
+        /* A prefix overlapping the destination would be modified while zstd is still reading
+         * it, and one overlapping the source confuses the window tracking; work on a copy in
+         * either case. */
+        private byte[]? GetEffectivePrefix(ReadOnlySpan<byte> src, ReadOnlySpan<byte> dest)
+        {
+            var currentPrefix = prefix;
+            if (currentPrefix != null && (src.Overlaps(currentPrefix) || dest.Overlaps(currentPrefix)))
+                currentPrefix = (byte[])currentPrefix.Clone();
+            return currentPrefix;
+        }
+#nullable restore
 
         public static ulong GetDecompressedSize(ReadOnlySpan<byte> src)
         {
@@ -88,7 +103,7 @@ namespace ZstdSharp
 
         public int Unwrap(ReadOnlySpan<byte> src, Span<byte> dest)
         {
-            var currentPrefix = prefix;
+            var currentPrefix = GetEffectivePrefix(src, dest);
             fixed (byte* prefixPtr = currentPrefix)
             fixed (byte* srcPtr = src)
             fixed (byte* destPtr = dest)
@@ -110,7 +125,7 @@ namespace ZstdSharp
 
         public bool TryUnwrap(ReadOnlySpan<byte> src, Span<byte> dest, out int written)
         {
-            var currentPrefix = prefix;
+            var currentPrefix = GetEffectivePrefix(src, dest);
             fixed (byte* prefixPtr = currentPrefix)
             fixed (byte* srcPtr = src)
             fixed (byte* destPtr = dest)

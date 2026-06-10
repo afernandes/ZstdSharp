@@ -56,7 +56,7 @@ against the previous version used as a prefix:
 ```c#
 // windowLog must cover prefix + input
 var windowLog = 10;
-while (windowLog < 31 && (1L << windowLog) < 2L * (long)oldVersion.Length)
+while (windowLog < 31 && (1L << windowLog) < (long)oldVersion.Length + newVersion.Length)
     windowLog++;
 
 using var compressor = new Compressor(level);
