@@ -72,8 +72,9 @@ namespace ZstdSharp
         /// <summary>
         /// References a prefix for the next compressed frame (ZSTD_CCtx_refPrefix), enabling
         /// delta compression ("patch-from"). Native semantics: the prefix applies to the next
-        /// frame only and is referenced, not copied — this instance pins the array and it must
-        /// not be modified until that compression completes. Re-reference before each frame.
+        /// frame only and is referenced, not copied — re-reference before each frame. The
+        /// supplied array is pinned and retained by the compressor until replaced, cleared, or
+        /// disposal, and must not be modified while in use.
         /// Decompression must reference the same prefix (<see cref="Decompressor.RefPrefix(byte[])"/>).
         /// Pass null to clear.
         /// </summary>

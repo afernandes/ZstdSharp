@@ -47,10 +47,11 @@ namespace ZstdSharp
         /// References a prefix for the next decompressed frame (ZSTD_DCtx_refPrefix). Must be
         /// the same prefix referenced by <see cref="Compressor.RefPrefix(byte[])"/> during
         /// compression. Native semantics: the prefix applies to the next frame only and is
-        /// referenced, not copied — this instance pins the array and it must not be modified
-        /// until that decompression completes. Re-reference before each frame; pass null to
-        /// clear. Remember to raise <see cref="ZSTD_dParameter.ZSTD_d_windowLogMax"/> to the
-        /// windowLog used during compression when large windows are involved.
+        /// referenced, not copied — re-reference before each frame. The supplied array is
+        /// pinned and retained by the decompressor until replaced, cleared, or disposal, and
+        /// must not be modified while in use. Pass null to clear. Remember to raise
+        /// <see cref="ZSTD_dParameter.ZSTD_d_windowLogMax"/> to the windowLog used during
+        /// compression when large windows are involved.
         /// </summary>
         /// <param name="prefix">Reference content used during compression, or null to clear.</param>
 #nullable enable
